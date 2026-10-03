@@ -7,7 +7,82 @@ from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
 
 from mmdet3d.datasets.convert_utils import NuScenesNameMapping
-from mmdet3d.tools.dataset_converters.nuscenes_converter import get_available_scenes, obtain_sensor2top, nus_categories, nus_attributes
+
+nus_categories = ('car', 'truck', 'trailer', 'bus', 'construction_vehicle',
+                  'bicycle', 'motorcycle', 'pedestrian', 'traffic_cone',
+                  'barrier')
+
+nus_attributes = ('cycle.with_rider', 'cycle.without_rider',
+                  'pedestrian.moving', 'pedestrian.standing',
+                  'pedestrian.sitting_lying_down', 'vehicle.moving',
+                  'vehicle.parked', 'vehicle.stopped', 'None')
+
+def get_available_scenes(nusc):
+    available_scenes = []
+    print('total scene num: {}'.format(len(nusc.scene)))
+    for scene in nusc.scene:
+        scene_token = scene['token']
+        scene_rec = nusc.get('scene', scene_token)
+        sample_rec = nusc.get('sample', scene_rec['first_sample_token'])
+        sd_rec = nusc.get('sample_data', sample_rec['data']['LIDAR_TOP'])
+        has_more_frames = True
+        scene_not_exist = False
+        while has_more_frames:
+            lidar_path, boxes, _ = nusc.get_sample_data(sd_rec['token'])
+            lidar_path = str(lidar_path)
+            if os.getcwd() in lidar_path:
+                lidar_path = lidar_path.split(f'{os.getcwd()}/')[-1]
+            if not mmengine.is_filepath(lidar_path):
+                scene_not_exist = True
+                break
+            else:
+                break
+        if scene_not_exist:
+            continue
+        available_scenes.append(scene)
+    print('exist scene num: {}'.format(len(available_scenes)))
+    return available_scenes
+
+def obtain_sensor2top(nusc,
+                      sensor_token,
+                      l2e_t,
+                      l2e_r_mat,
+                      e2g_t,
+                      e2g_r_mat,
+                      sensor_type='lidar'):
+    sd_rec = nusc.get('sample_data', sensor_token)
+    cs_record = nusc.get('calibrated_sensor',
+                         sd_rec['calibrated_sensor_token'])
+    pose_record = nusc.get('ego_pose', sd_rec['ego_pose_token'])
+    data_path = str(nusc.get_sample_data_path(sd_rec['token']))
+    if os.getcwd() in data_path: 
+        data_path = data_path.split(f'{os.getcwd()}/')[-1]
+    sweep = {
+        'data_path': data_path,
+        'type': sensor_type,
+        'sample_data_token': sd_rec['token'],
+        'sensor2ego_translation': cs_record['translation'],
+        'sensor2ego_rotation': cs_record['rotation'],
+        'ego2global_translation': pose_record['translation'],
+        'ego2global_rotation': pose_record['rotation'],
+        'timestamp': sd_rec['timestamp']
+    }
+    l2e_r_s = sweep['sensor2ego_rotation']
+    l2e_t_s = sweep['sensor2ego_translation']
+    e2g_r_s = sweep['ego2global_rotation']
+    e2g_t_s = sweep['ego2global_translation']
+
+    l2e_r_s_mat = Quaternion(l2e_r_s).rotation_matrix
+    e2g_r_s_mat = Quaternion(e2g_r_s).rotation_matrix
+    R = (l2e_r_s_mat.T @ e2g_r_s_mat.T) @ (
+        np.linalg.inv(e2g_r_mat).T @ np.linalg.inv(l2e_r_mat).T)
+    T = (l2e_t_s @ e2g_r_s_mat.T + e2g_t_s) @ (
+        np.linalg.inv(e2g_r_mat).T @ np.linalg.inv(l2e_r_mat).T)
+    T -= e2g_t @ (np.linalg.inv(e2g_r_mat).T @ np.linalg.inv(l2e_r_mat).T
+                  ) + l2e_t @ np.linalg.inv(l2e_r_mat).T
+    sweep['sensor2lidar_rotation'] = R.T
+    sweep['sensor2lidar_translation'] = T
+    return sweep
 
 def create_custom_nuscenes_infos(root_path,
                                  info_prefix,
@@ -61,6 +136,9 @@ def _fill_trainval_infos_with_radar(nusc,
     radar_sensors = ['RADAR_FRONT', 'RADAR_FRONT_LEFT', 'RADAR_FRONT_RIGHT', 'RADAR_BACK_LEFT', 'RADAR_BACK_RIGHT']
 
     for sample in mmengine.track_iter_progress(nusc.sample):
+        if sample['scene_token'] not in train_scenes and sample['scene_token'] not in val_scenes:
+            continue
+
         lidar_token = sample['data']['LIDAR_TOP']
         sd_rec = nusc.get('sample_data', sample['data']['LIDAR_TOP'])
         cs_record = nusc.get('calibrated_sensor', sd_rec['calibrated_sensor_token'])
@@ -74,6 +152,7 @@ def _fill_trainval_infos_with_radar(nusc,
             'num_features': 5,
             'token': sample['token'],
             'sweeps': [],
+            'radars': dict(),
             'radar_sweeps': {radar: [] for radar in radar_sensors},
             'cams': dict(),
             'lidar2ego_translation': cs_record['translation'],
@@ -115,9 +194,15 @@ def _fill_trainval_infos_with_radar(nusc,
                 break
         info['sweeps'] = sweeps
 
-        # Radar sweeps
+        # Radar sweeps and current frame
         for radar in radar_sensors:
             radar_token = sample['data'][radar]
+            radar_path, _, radar_intrinsic = nusc.get_sample_data(radar_token)
+            radar_info = obtain_sensor2top(nusc, radar_token, l2e_t, l2e_r_mat,
+                                         e2g_t, e2g_r_mat, radar)
+            radar_info.update(cam_intrinsic=radar_intrinsic)
+            info['radars'].update({radar: radar_info})
+
             radar_sd_rec = nusc.get('sample_data', radar_token)
             radar_sweeps = []
             while len(radar_sweeps) < max_sweeps:

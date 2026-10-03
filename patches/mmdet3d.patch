@@ -1,0 +1,26 @@
+diff --git a/mmdet3d/datasets/transforms/dbsampler.py b/mmdet3d/datasets/transforms/dbsampler.py
+index 56e8440b..093cdfb1 100644
+--- a/mmdet3d/datasets/transforms/dbsampler.py
++++ b/mmdet3d/datasets/transforms/dbsampler.py
+@@ -280,7 +280,7 @@ class DataBaseSampler(object):
+                 s_points_list.append(s_points)
+ 
+             gt_labels = np.array([self.cat2label[s['name']] for s in sampled],
+-                                 dtype=np.long)
++                                 dtype=np.int64)
+ 
+             if ground_plane is not None:
+                 xyz = sampled_gt_bboxes[:, :3]
+diff --git a/tools/dataset_converters/update_infos_to_v2.py b/tools/dataset_converters/update_infos_to_v2.py
+index a2ddbd06..601b1a60 100644
+--- a/tools/dataset_converters/update_infos_to_v2.py
++++ b/tools/dataset_converters/update_infos_to_v2.py
+@@ -268,7 +268,7 @@ def update_nuscenes_infos(pkl_path, out_dir):
+     }
+     nusc = NuScenes(
+         version=data_list['metadata']['version'],
+-        dataroot='./data/nuscenes',
++        dataroot=out_dir,
+         verbose=True)
+ 
+     print('Start updating:')
